@@ -80,7 +80,10 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     try:
         while not stop["flag"] and capture.is_running:
             time.sleep(detect_interval)
-            _run_detection_pass(args, capture, chat_mon, out_dir, cut_already)
+            try:
+                _run_detection_pass(args, capture, chat_mon, out_dir, cut_already)
+            except Exception:
+                log.exception("detection pass failed; continuing")
     finally:
         if chat_mon is not None:
             chat_mon.stop()
@@ -176,10 +179,11 @@ def cmd_process(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Treat the video as a single-segment "capture". cut_clip walks the
-    # segments folder, so put a symlink there.
+    # segments folder, so put a symlink there. Extension preserves the source.
     segments_dir = out_dir / "segments"
     segments_dir.mkdir(exist_ok=True)
-    sym = segments_dir / "seg_000000.mp4"
+    src_ext = video_path.suffix.lower() if video_path.suffix.lower() in {".ts", ".mp4"} else ".mp4"
+    sym = segments_dir / f"seg_000000{src_ext}"
     if sym.exists() or sym.is_symlink():
         sym.unlink()
     sym.symlink_to(video_path.resolve())

@@ -50,7 +50,8 @@ def _segments_covering(
     that overlap [start, end]. We assume segments are in chronological order
     and named seg_NNNNNN.mp4; we use their actual durations rather than the
     nominal segment_seconds so a final short segment is handled correctly."""
-    files = sorted(segments_dir.glob("seg_*.mp4"))
+    # Live captures write .ts (mpegts); offline `process` mode symlinks .ts too.
+    files = sorted(list(segments_dir.glob("seg_*.ts")) + list(segments_dir.glob("seg_*.mp4")))
     if not files:
         return []
     durations = [_ffprobe_duration(f) for f in files]
