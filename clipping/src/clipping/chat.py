@@ -12,7 +12,7 @@ import random
 import socket
 import threading
 import time
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections import deque
 
 log = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class ChatMonitor:
                 self._timestamps.popleft()
 
     def velocity_curve(self, start: float, end: float, bin_seconds: float = 2.0) -> list[tuple[float, int]]:
-        """Return [(bin_center_t, msg_count)] across [start, end]."""
+        """Return [(bin_center_t, msg_count)] across [start, end), half-open bins."""
         with self._lock:
             timestamps = list(self._timestamps)
         result: list[tuple[float, int]] = []
@@ -105,12 +105,13 @@ class ChatMonitor:
         while t < end:
             bin_end = t + bin_seconds
             lo = bisect_left(timestamps, t)
-            hi = bisect_right(timestamps, bin_end)
+            hi = bisect_left(timestamps, bin_end)
             result.append((t + bin_seconds / 2, hi - lo))
             t = bin_end
         return result
 
     def messages_in_range(self, start: float, end: float) -> int:
+        """Count messages with start <= t < end."""
         with self._lock:
             timestamps = list(self._timestamps)
-        return bisect_right(timestamps, end) - bisect_left(timestamps, start)
+        return bisect_left(timestamps, end) - bisect_left(timestamps, start)

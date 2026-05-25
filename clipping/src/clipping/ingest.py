@@ -21,14 +21,26 @@ log = logging.getLogger(__name__)
 OFFLINE_TOKENS = ("no playable streams", "is offline", "no streams found")
 
 
+PLATFORM_URLS = {
+    "twitch": "https://www.twitch.tv/{channel}",
+    "kick":   "https://kick.com/{channel}",
+}
+
+
 @dataclass
 class CaptureConfig:
     channel: str
     output_dir: Path
+    platform: str = "twitch"               # 'twitch' or 'kick'
     quality: str = "480p,worst"           # streamlink quality selector
     segment_seconds: int = 30              # ffmpeg segment length
     retention_seconds: int = 3600          # delete segments older than this
     poll_offline_seconds: int = 60         # retry interval when channel offline
+
+    def stream_url(self) -> str:
+        if self.platform not in PLATFORM_URLS:
+            raise ValueError(f"unknown platform {self.platform!r}; supported: {list(PLATFORM_URLS)}")
+        return PLATFORM_URLS[self.platform].format(channel=self.channel)
 
 
 @dataclass
@@ -50,7 +62,7 @@ class Capture:
     def iter_segments(self) -> Iterator[Path]:
         """Yield segment paths in creation order. Skips the most recent file
         (still being written by ffmpeg)."""
-        files = sorted(self.segments_dir.glob("seg_*.mp4"))
+        files = sorted(self.segments_dir.glob("seg_*.ts"))
         if len(files) <= 1:
             return iter([])
         return iter(files[:-1])
@@ -79,7 +91,7 @@ def _gc_loop(capture: Capture) -> None:
     """Background thread: delete segments older than retention_seconds."""
     while not capture._stop_event.wait(timeout=30):
         cutoff = time.time() - capture.config.retention_seconds
-        for f in capture.segments_dir.glob("seg_*.mp4"):
+        for f in capture.segments_dir.glob("seg_*.ts"):
             try:
                 if f.stat().st_mtime < cutoff:
                     f.unlink(missing_ok=True)
@@ -97,12 +109,14 @@ def start_capture(config: CaptureConfig) -> Capture:
     segments_dir = config.output_dir / "segments"
     if segments_dir.exists():
         # fresh capture: clear stale segments from a prior run
-        for f in segments_dir.glob("seg_*.mp4"):
+        for f in list(segments_dir.glob("seg_*.ts")) + list(segments_dir.glob("seg_*.mp4")):
             f.unlink(missing_ok=True)
     segments_dir.mkdir(parents=True, exist_ok=True)
 
-    url = f"https://www.twitch.tv/{config.channel}"
+    url = config.stream_url()
     sl_cmd = ["streamlink", "--stdout", "--retry-streams", "0", "--retry-max", "0", url, config.quality]
+    # MPEG-TS segments: no moov-atom problem (streaming-friendly container
+    # designed for partial reads). Matches what HLS delivers anyway.
     ff_cmd = [
         "ffmpeg", "-y",
         "-loglevel", "warning",
@@ -110,10 +124,11 @@ def start_capture(config: CaptureConfig) -> Capture:
         "-c", "copy",
         "-map", "0",
         "-f", "segment",
+        "-segment_format", "mpegts",
         "-segment_time", str(config.segment_seconds),
         "-reset_timestamps", "1",
         "-strftime", "0",
-        str(segments_dir / "seg_%06d.mp4"),
+        str(segments_dir / "seg_%06d.ts"),
     ]
 
     log.info("starting capture: %s", " ".join(sl_cmd))
@@ -134,7 +149,7 @@ def start_capture(config: CaptureConfig) -> Capture:
             if any(tok in stderr.lower() for tok in OFFLINE_TOKENS):
                 raise ChannelOffline(config.channel)
             raise RuntimeError(f"streamlink failed: {stderr.strip()[:300]}")
-        if any(segments_dir.glob("seg_*.mp4")):
+        if any(segments_dir.glob("seg_*.ts")):
             # ffmpeg produced its first segment, capture is live
             break
         time.sleep(0.4)
