@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clipfarm · Twitch livestream highlight clipper</title>
+<meta name="description" content="clipfarm — pulls a Twitch livestream as it airs, scores windows on audio loudness + chat velocity, cuts 9:16 vertical highlights, leaves them in a review queue. CLI tool by Arjun Prithvi.">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --bg-soft: #141414;
+    --bg-softer: #1a1a1a;
+    --border: #1f1f1f;
+    --border-hot: #2a2a2a;
+    --text: #e8e8e8;
+    --text-dim: #888;
+    --text-faint: #555;
+    --accent: #0DFF82;
+    --accent-warm: #FF2947;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 64px 24px 96px;
+  }
+
+  header { margin-bottom: 56px; }
+  .crumb {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 16px;
+  }
+  .crumb a { color: var(--text-dim); text-decoration: none; border-bottom: 1px solid var(--border); }
+  .crumb a:hover { color: var(--text); }
+  h1 {
+    font-size: 44px;
+    font-weight: 700;
+    letter-spacing: -1.5px;
+    margin-bottom: 8px;
+  }
+  h1 .accent { color: var(--accent); }
+  .tagline {
+    font-size: 18px;
+    color: var(--text-dim);
+    max-width: 640px;
+    margin-bottom: 28px;
+  }
+  .header-links {
+    display: flex;
+    gap: 18px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 13px;
+  }
+  .header-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 2px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .header-links a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  section { margin-bottom: 56px; }
+  .section-label {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    margin-bottom: 14px;
+  }
+  p { color: var(--text); margin-bottom: 12px; }
+  p.note { color: var(--text-dim); font-size: 14px; }
+  code, kbd {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    background: var(--bg-soft);
+    color: var(--text);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 13.5px;
+    border: 1px solid var(--border);
+  }
+
+  /* Pipeline diagram */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .step {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    position: relative;
+  }
+  .step-num {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+  }
+  .step-name {
+    font-weight: 700;
+    margin-bottom: 6px;
+    font-size: 15px;
+  }
+  .step-desc {
+    color: var(--text-dim);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  /* Terminal block */
+  pre {
+    background: #06060c;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: rgba(232, 232, 232, 0.9);
+  }
+  pre.terminal::-webkit-scrollbar { height: 6px; }
+  pre.terminal::-webkit-scrollbar-thumb { background: var(--border-hot); border-radius: 3px; }
+  pre.terminal .comment { color: var(--text-faint); }
+  pre.terminal .ok { color: var(--accent); }
+  pre.terminal .warn { color: #ffba00; }
+  pre.terminal .dim { color: var(--text-dim); }
+  pre.terminal .ts { color: var(--text-faint); }
+
+  /* before/after illustration */
+  .visual {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 18px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .frame {
+    background: var(--bg-soft);
+    border: 1px solid var(--border-hot);
+    border-radius: 6px;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-faint);
+    position: relative;
+    overflow: hidden;
+  }
+  .frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(135deg, rgba(13,255,130,0.07), transparent 50%),
+      linear-gradient(225deg, rgba(255,41,71,0.07), transparent 50%);
+  }
+  .frame .crop {
+    position: absolute;
+    top: 0; bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    aspect-ratio: 9 / 16;
+    border: 1.5px dashed var(--accent);
+    background: rgba(13, 255, 130, 0.08);
+  }
+  .frame.vertical { aspect-ratio: 9 / 16; }
+  .frame .label {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    z-index: 1;
+    background: rgba(0,0,0,0.6);
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .arrow {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    color: var(--accent);
+    font-size: 22px;
+  }
+
+  /* tech stack */
+  .stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .stack span {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .stack span b { color: var(--text); font-weight: 600; }
+
+  hr { border: none; border-top: 1px solid var(--border); margin: 0; }
+
+  footer {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--text-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  footer a { color: var(--text-faint); text-decoration: none; }
+  footer a:hover { color: var(--accent); }
+
+  .badge {
+    display: inline-block;
+    background: var(--accent);
+    color: #000;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-left: 12px;
+    vertical-align: middle;
+  }
+
+  @media (max-width: 600px) {
+    .wrap { padding: 40px 18px 64px; }
+    h1 { font-size: 32px; }
+    .pipeline { grid-template-columns: 1fr; }
+    .visual { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); justify-self: center; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="crumb">
+    <a href="https://windycityassassin.github.io/">arjunprithvi</a> /
+    <span>clipfarm</span>
+  </div>
+  <h1>clipfarm <span class="accent">·</span> Twitch highlight clipper<span class="badge">CLI</span></h1>
+  <p class="tagline">Watches a Twitch channel as it airs. Scores windows on audio loudness and chat velocity. Cuts the peaks into 9:16 vertical clips ready for short-form social. No auto-publish — clips land in a review queue.</p>
+  <div class="header-links">
+    <a href="https://github.com/windycityassassin/clipfarm" target="_blank" rel="noopener">code →</a>
+    <a href="https://github.com/windycityassassin/clipfarm/tree/master/clipping" target="_blank" rel="noopener">clipping/ subdir →</a>
+    <a href="https://windycityassassin.github.io/" target="_blank" rel="noopener">portfolio →</a>
+  </div>
+</header>
+
+<section>
+  <div class="section-label">What it does</div>
+  <p>Most short-form video on TikTok / YouTube Shorts / Instagram Reels is repurposed long-form. Clipping a four-hour stream by hand is brutal. clipfarm turns that into <code>clipping monitor &lt;channel&gt;</code>: streamlink pulls the HLS feed, ffmpeg writes rolling MPEG-TS segments, a scoring pass identifies the peaks, and each peak gets cropped to 9:16 with a JSON sidecar of the score breakdown.</p>
+  <div class="visual">
+    <div class="frame">
+      <span class="label">source · 1920×1080 · 16:9</span>
+      <span class="crop"></span>
+    </div>
+    <div class="arrow">→</div>
+    <div class="frame vertical">
+      <span class="label">clip · 1080×1920 · 9:16</span>
+    </div>
+  </div>
+  <p class="note" style="margin-top:10px;">The dashed box on the left shows the 9:16 center column that ends up in the vertical clip. <code>crop=ih*9/16:ih,scale=1080:1920</code>, single ffmpeg invocation that concat-demuxes the relevant segments and cuts the exact window.</p>
+</section>
+
+<section>
+  <div class="section-label">Pipeline</div>
+  <div class="pipeline">
+    <div class="step">
+      <div class="step-num">01</div>
+      <div class="step-name">live-detect &amp; ingest</div>
+      <div class="step-desc">streamlink probes the channel. On offline, retry every 60s. On live, pipe the HLS stream into <code>ffmpeg -f segment</code>, write 30-second TS files into a rolling buffer.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">02</div>
+      <div class="step-name">chat firehose</div>
+      <div class="step-desc">Anonymous IRC connection as <code>justinfanNNNN</code>. PRIVMSG timestamps go into a bisect-indexed deque so binning queries are O(log&nbsp;n).</div>
+    </div>
+    <div class="step">
+      <div class="step-num">03</div>
+      <div class="step-name">score windows</div>
+      <div class="step-desc">Extract audio to mono wav (16kHz), compute RMS-in-dBFS per bin. Z-score audio + chat against their recent baselines. Combine: <code>α·audio_z + β·chat_z</code>.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">04</div>
+      <div class="step-name">non-max suppression</div>
+      <div class="step-desc">Sort candidates by score, keep top peaks at least <code>min_gap_seconds</code> apart. Re-sort chronologically for cut order.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">05</div>
+      <div class="step-name">cut + reformat</div>
+      <div class="step-desc">For each peak, find overlapping segments, concat-demux them, cut <code>[t-pre, t+post]</code>, center-crop 9:16, encode h264+aac.</div>
+    </div>
+    <div class="step">
+      <div class="step-num">06</div>
+      <div class="step-name">review queue</div>
+      <div class="step-desc">MP4 + JSON sidecar drop into <code>out/&lt;channel&gt;/</code>. You review and decide what to post. Phase 1 stops here.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">Verified end-to-end</div>
+  <h2>Live capture against a real Twitch channel</h2>
+  <p class="note">Ran the monitor against a public 24/7 channel. Logs trimmed for clarity; verbatim otherwise.</p>
+  <pre class="terminal"><span class="ts">12:37:39</span> clipping           INFO  waiting for twitch/#lofigirl to go live
+<span class="ts">12:37:39</span> clipping.ingest    INFO  starting capture: streamlink --stdout https://www.twitch.tv/lofigirl 480p,worst
+<span class="ts">12:37:42</span> clipping.ingest    <span class="ok">INFO  capture live: segments going to out/lofigirl/segments</span>
+<span class="ts">12:37:42</span> clipping.chat      <span class="ok">INFO  chat connected to #lofigirl as justinfan28490</span>
+<span class="comment">[~95s of capture across 4 TS segments, valid mpegts]</span>
+<span class="ts">12:39:13</span> clipping           INFO  stop signal received, draining
+<span class="ts">12:39:13</span> clipping           INFO  capture stopped
+
+<span class="dim">$ clipping process out/lofigirl/segments/seg_000000.ts --min-score 0.3</span>
+<span class="ts">12:39:41</span> clipping           INFO  found 5 highlights
+<span class="ts">12:39:41</span> clipping.cut       INFO  cutting clip: 2.5 -&gt; clip_00004_z+0.32.mp4 (7.0s)
+<span class="ts">12:39:42</span> clipping.cut       INFO  cutting clip: 8.5 -&gt; clip_00010_z+0.52.mp4 (7.0s)
+<span class="ts">12:39:43</span> clipping.cut       INFO  cutting clip: 14.5 -&gt; clip_00016_z+0.97.mp4 (7.0s)
+<span class="ts">12:39:44</span> clipping.cut       INFO  cutting clip: 20.5 -&gt; clip_00022_z+0.51.mp4 (7.0s)
+<span class="ts">12:39:45</span> clipping.cut       INFO  cutting clip: 26.5 -&gt; clip_00028_z+0.93.mp4 (7.0s)
+
+<span class="dim">$ ffprobe -v error -show_entries stream=codec_name,width,height -of default=nw=1 clip_00004_z+0.32.mp4</span>
+codec_name=h264
+width=1080
+height=1920
+codec_name=aac</pre>
+</section>
+
+<section>
+  <div class="section-label">Sidecar JSON</div>
+  <p>Every clip comes with a JSON next to it, recording the score breakdown so you can sanity-check what the detector picked and tune <code>--alpha</code> / <code>--beta</code> / <code>--min-score</code> per channel.</p>
+  <pre>{
+  "channel": "kaicenat",
+  "captured_at": 1748189453.124,
+  "highlight": {
+    "timestamp_in_capture_s": 847.3,
+    "score": 2.74,
+    "audio_z": 2.91,
+    "chat_z": 2.47,
+    "chat_count": 31
+  }
+}</pre>
+</section>
+
+<section>
+  <div class="section-label">Stack</div>
+  <div class="stack">
+    <span><b>Python</b> 3.11+</span>
+    <span><b>streamlink</b> HLS pull</span>
+    <span><b>ffmpeg</b> segment + cut + 9:16</span>
+    <span><b>numpy</b> + <b>soundfile</b> loudness scoring</span>
+    <span><b>stdlib socket</b> Twitch IRC</span>
+    <span><b>pytest</b> 10/10 passing</span>
+  </div>
+</section>
+
+<section>
+  <div class="section-label">Run it yourself</div>
+  <pre>brew install streamlink ffmpeg
+
+git clone https://github.com/windycityassassin/clipfarm
+cd clipfarm/clipping
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -e .
+
+clipping monitor &lt;channel&gt;</pre>
+  <p class="note">No API keys, no OAuth. Chat is read over Twitch's anonymous IRC bridge. Streamlink handles HLS auth automatically.</p>
+</section>
+
+<section>
+  <div class="section-label">What this is not</div>
+  <p>Not a publisher. Phase 1 stops at MP4-on-disk by design. Auto-upload to YouTube Shorts / TikTok / Instagram Reels is Phase 2+ and will be opt-in per channel, behind each platform's official API.</p>
+  <p>Not a stealth tool. Streamlink uses Twitch's normal viewer flow; chat is read over the public anonymous IRC bridge. If Twitch ever rate-limits or shapes the request, that's the honest answer — the tool does nothing to hide.</p>
+</section>
+
+<footer>
+  <div>clipfarm · Phase 1 · CLI tool, no browser version</div>
+  <div><a href="https://github.com/windycityassassin/clipfarm" target="_blank" rel="noopener">github.com/windycityassassin/clipfarm</a></div>
+</footer>
+
+</div>
+</body>
+</html>
